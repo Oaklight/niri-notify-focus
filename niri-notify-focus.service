@@ -1,0 +1,12 @@
+[Unit]
+Description=Focus source window on notification click (niri)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/niri-notify-focus
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""niri-notify-focus: Focus source window when a notification is clicked.
+
+Monitors D-Bus notification traffic via BecomeMonitor, maps sender PIDs
+to niri windows by walking the process tree, and focuses the correct
+window when the user clicks a notification action or dismisses it.
+
+Usage:
+    niri-notify-focus        # run in foreground
+    niri-notify-focus -d     # debug logging
+
+Requires: niri, python3, dbus-python, pygobject
+"""
+
+import json
+import logging
+import os
+import signal
+import subprocess
+import sys
+import time
+
+import dbus
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
+
+LOG_FMT = "%(asctime)s %(levelname)s %(message)s"
+log = logging.getLogger("niri-notify-focus")
+
+MAX_ENTRIES = 200
+
+
+def get_niri_windows():
+    """Get all niri windows as a list of dicts."""
+    try:
+        result = subprocess.run(
+            ["niri", "msg", "--json", "windows"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return json.loads(result.stdout)
+    except Exception:
+        return []
+
+
+def get_ppid(pid):
+    """Get parent PID from /proc."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split(":")[1].strip())
+    except (FileNotFoundError, PermissionError, ValueError):
+        pass
+    return None
+
+
+def find_window_for_pid(sender_pid):
+    """Walk up the PID tree to find the matching niri window.
+
+    Returns (window_id, window_title) or (None, None).
+    """
+    windows = get_niri_windows()
+    window_pids = {w["pid"]: (w["id"], w.get("title", "")) for w in windows}
+
+    current = sender_pid
+    visited = set()
+    while current and current > 1 and current not in visited:
+        visited.add(current)
+        if current in window_pids:
+            return window_pids[current]
+        current = get_ppid(current)
+    return None, None
+
+
+def _niri_action(*args):
+    """Run a niri action without blocking (fire-and-forget)."""
+    try:
+        subprocess.Popen(
+            ["niri", "msg", "action", *args],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        log.error("niri action %s failed: %s", args, e)
+
+
+def _get_focused_window_height():
+    """Get the focused window's height in pixels."""
+    try:
+        result = subprocess.run(
+            ["niri", "msg", "--json", "focused-window"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        info = json.loads(result.stdout)
+        return info["layout"]["window_size"][1]
+    except Exception:
+        return None
+
+
+def flash_and_focus_window(window_id):
+    """Focus window, then pulse its size as a visual cue."""
+    _niri_action("focus-window", "--id", str(window_id))
+    log.info("Focused window %d", window_id)
+
+    saved = {}
+
+    # Schedule pulse steps on the GLib main loop (non-blocking)
+    def _expand():
+        saved["height"] = _get_focused_window_height()
+        _niri_action("set-column-width", "+5%")
+        _niri_action("set-window-height", "+5%")
+        return False
+
+    def _shrink():
+        _niri_action("set-column-width", "-5%")
+        h = saved.get("height")
+        if h is not None:
+            _niri_action("set-window-height", str(int(h)))
+        else:
+            _niri_action("reset-window-height")
+        return False
+
+    GLib.timeout_add(100, _expand)
+    GLib.timeout_add(500, _shrink)
+
+
+def get_dbus_sender_pid(lookup_bus, sender_name):
+    """Get PID of a D-Bus connection via GetConnectionUnixProcessID."""
+    try:
+        return int(
+            lookup_bus.call_blocking(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "GetConnectionUnixProcessID",
+                "s",
+                (sender_name,),
+            )
+        )
+    except Exception:
+        return None
+
+
+def run_monitor():
+    """Run the BecomeMonitor loop."""
+    # Separate connection for D-Bus PID lookups (BecomeMonitor is read-only)
+    lookup_bus = dbus.SessionBus()
+
+    bus = dbus.SessionBus(private=True)
+    bus.call_blocking(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus.Monitoring",
+        "BecomeMonitor",
+        "asu",
+        (
+            [
+                # Catch Notify calls, ActionInvoked/NotificationClosed signals
+                "interface='org.freedesktop.Notifications'",
+                # Catch method returns (needed to get notification IDs)
+                "type='method_return'",
+            ],
+            0,
+        ),
+    )
+
+    # "sender_busname:serial" -> (window_id, title)
+    pending = {}
+    # notification_id -> (window_id, title)
+    notif_to_window = {}
+
+    def msg_filter(conn, msg):
+        msg_type = msg.get_type()
+        member = msg.get_member()
+        sender = msg.get_sender()
+        dest = msg.get_destination()
+        serial = msg.get_serial()
+        reply_serial = msg.get_reply_serial()
+
+        # --- Notify method call: extract sender PID, resolve window ---
+        if msg_type == 1 and member == "Notify":
+            args = msg.get_args_list()
+            hints = dict(args[6]) if len(args) > 6 else {}
+
+            # Try sender-pid hint first, then D-Bus connection PID
+            sender_pid = int(hints.get("sender-pid", 0))
+            if not sender_pid:
+                sender_pid = get_dbus_sender_pid(lookup_bus, sender) or 0
+
+            if sender_pid:
+                key = f"{sender}:{serial}"
+                # Resolve window eagerly while sender PID is still alive
+                window_id, title = find_window_for_pid(sender_pid)
+                if window_id is not None:
+                    pending[key] = (window_id, title)
+                    log.debug(
+                        "Notify pid=%d -> window %d (%s)",
+                        sender_pid,
+                        window_id,
+                        title[:40],
+                    )
+
+        # --- Method return: map notification_id to window ---
+        elif msg_type == 2 and reply_serial:
+            args = msg.get_args_list()
+            # Notify returns a single UInt32 (the notification ID)
+            if len(args) == 1 and isinstance(args[0], dbus.UInt32):
+                notif_id = int(args[0])
+                key = f"{dest}:{reply_serial}"
+                if key in pending:
+                    notif_to_window[notif_id] = pending.pop(key)
+                    log.info(
+                        "Tracked notif %d -> window %d (%s)",
+                        notif_id,
+                        notif_to_window[notif_id][0],
+                        notif_to_window[notif_id][1][:40],
+                    )
+                    _cleanup(notif_to_window)
+
+        # --- ActionInvoked signal: user clicked an action button ---
+        elif msg_type == 4 and member == "ActionInvoked":
+            args = msg.get_args_list()
+            if len(args) >= 1:
+                notif_id = int(args[0])
+                action_key = str(args[1]) if len(args) > 1 else ""
+                if notif_id in notif_to_window:
+                    wid, title = notif_to_window[notif_id]
+                    log.info(
+                        "ActionInvoked notif=%d action=%s -> focus window %d (%s)",
+                        notif_id,
+                        action_key,
+                        wid,
+                        title[:40],
+                    )
+                    flash_and_focus_window(wid)
+
+        # --- NotificationClosed signal: user dismissed ---
+        elif msg_type == 4 and member == "NotificationClosed":
+            args = msg.get_args_list()
+            if len(args) >= 2:
+                notif_id = int(args[0])
+                reason = int(args[1])
+                # reason 2 = dismissed by user
+                if reason == 2 and notif_id in notif_to_window:
+                    wid, title = notif_to_window[notif_id]
+                    # Only focus if ActionInvoked didn't already handle it
+                    # (DMS sends both ActionInvoked then NotificationClosed)
+                    log.debug(
+                        "NotificationClosed notif=%d reason=%d", notif_id, reason
+                    )
+                notif_to_window.pop(notif_id, None)
+
+        return dbus.lowlevel.HANDLER_RESULT_HANDLED
+
+    bus.add_message_filter(msg_filter)
+    loop = GLib.MainLoop()
+
+    def on_signal(signum, frame):
+        log.info("Signal %d received, exiting", signum)
+        loop.quit()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    log.info("Monitoring notifications (pid=%d)...", os.getpid())
+    loop.run()
+
+
+def _cleanup(notif_to_window):
+    """Evict oldest entries if map grows too large."""
+    if len(notif_to_window) > MAX_ENTRIES:
+        for k in sorted(notif_to_window)[: MAX_ENTRIES // 2]:
+            notif_to_window.pop(k, None)
+
+
+def main():
+    level = logging.DEBUG if "-d" in sys.argv else logging.INFO
+    logging.basicConfig(format=LOG_FMT, level=level)
+    DBusGMainLoop(set_as_default=True)
+
+    while True:
+        try:
+            run_monitor()
+        except dbus.exceptions.DBusException as e:
+            log.warning("D-Bus error: %s — retrying in 5s", e)
+            time.sleep(5)
+        except Exception as e:
+            log.error("Unexpected error: %s — retrying in 5s", e)
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    main()
