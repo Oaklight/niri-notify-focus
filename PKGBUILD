@@ -1,4 +1,4 @@
-# Maintainer: Pei Ding <oaklight@gmail.com>
+# Maintainer: Pei Ding <oaklight at gmx dot com>
 pkgname=niri-notify-focus
 pkgver=0.1.0
 pkgrel=1
