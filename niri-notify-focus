@@ -86,8 +86,8 @@ def _niri_action(*args):
         log.error("niri action %s failed: %s", args, e)
 
 
-def _get_focused_window_height():
-    """Get the focused window's height in pixels."""
+def _get_focused_window_size():
+    """Get the focused window's (width, height) in pixels."""
     try:
         result = subprocess.run(
             ["niri", "msg", "--json", "focused-window"],
@@ -96,36 +96,45 @@ def _get_focused_window_height():
             timeout=2,
         )
         info = json.loads(result.stdout)
-        return info["layout"]["window_size"][1]
+        size = info["layout"]["window_size"]
+        return int(size[0]), int(size[1])
     except Exception:
-        return None
+        return None, None
 
 
 def flash_and_focus_window(window_id):
-    """Focus window, then pulse its size as a visual cue."""
+    """Focus window, then pulse its size inward as a visual cue.
+
+    Shrinks the window briefly then restores original dimensions,
+    avoiding layout disturbance to neighboring windows.
+    """
     _niri_action("focus-window", "--id", str(window_id))
     log.info("Focused window %d", window_id)
 
     saved = {}
 
     # Schedule pulse steps on the GLib main loop (non-blocking)
-    def _expand():
-        saved["height"] = _get_focused_window_height()
-        _niri_action("set-column-width", "+5%")
-        _niri_action("set-window-height", "+5%")
+    def _shrink():
+        w, h = _get_focused_window_size()
+        saved["width"] = w
+        saved["height"] = h
+        _niri_action("set-column-width", "-5%")
+        _niri_action("set-window-height", "-5%")
         return False
 
-    def _shrink():
-        _niri_action("set-column-width", "-5%")
+    def _restore():
+        w = saved.get("width")
         h = saved.get("height")
+        if w is not None:
+            _niri_action("set-column-width", str(w))
         if h is not None:
-            _niri_action("set-window-height", str(int(h)))
+            _niri_action("set-window-height", str(h))
         else:
             _niri_action("reset-window-height")
         return False
 
-    GLib.timeout_add(100, _expand)
-    GLib.timeout_add(500, _shrink)
+    GLib.timeout_add(100, _shrink)
+    GLib.timeout_add(500, _restore)
 
 
 def get_dbus_sender_pid(lookup_bus, sender_name):
