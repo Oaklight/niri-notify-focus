@@ -145,7 +145,7 @@ def _get_focused_window_height():
 
 
 def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
-    """Focus window and optionally pulse its height as a visual cue.
+    """Focus window and optionally pulse its size as a visual cue.
 
     Args:
         window_id: The niri window ID to focus.
@@ -163,13 +163,15 @@ def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
 
     def _pulse():
         saved["height"] = _get_focused_window_height()
+        _niri_action("set-column-width", f"{sign * pulse_px:+d}")
         _niri_action("set-window-height", f"{sign * pulse_px:+d}")
         return False
 
     def _restore():
-        # Reset to auto height first (handles auto-fill windows correctly)
+        # Width: symmetric ±px restore (column width has no auto mode)
+        _niri_action("set-column-width", f"{-sign * pulse_px:+d}")
+        # Height: reset to auto first, then conditionally restore fixed height
         _niri_action_sync("reset-window-height")
-        # If the window had a custom fixed height, restore it
         h = saved.get("height")
         if h is not None:
             current_h = _get_focused_window_height()
