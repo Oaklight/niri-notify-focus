@@ -9,7 +9,7 @@ license=('MIT')
 depends=('python' 'python-dbus' 'python-gobject')
 optdepends=('niri: required Wayland compositor')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('9fb9f8e3564bfda93e89a6a657441930e67b616447fb951988ff5bbad3d56e0f')
 
 package() {
     cd "${pkgname}-${pkgver}"
