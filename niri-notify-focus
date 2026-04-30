@@ -117,6 +117,33 @@ def _niri_action(*args):
         log.error("niri action %s failed: %s", args, e)
 
 
+def _niri_action_sync(*args):
+    """Run a niri action and wait for completion."""
+    try:
+        subprocess.run(
+            ["niri", "msg", "action", *args],
+            capture_output=True,
+            timeout=2,
+        )
+    except Exception as e:
+        log.error("niri action %s failed: %s", args, e)
+
+
+def _get_focused_window_height():
+    """Get the focused window's height in pixels."""
+    try:
+        result = subprocess.run(
+            ["niri", "msg", "--json", "focused-window"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        info = json.loads(result.stdout)
+        return int(info["layout"]["window_size"][1])
+    except Exception:
+        return None
+
+
 def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
     """Focus window and optionally pulse its height as a visual cue.
 
@@ -132,13 +159,22 @@ def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
         return
 
     sign = -1 if effect == "shrink" else 1
+    saved = {}
 
     def _pulse():
+        saved["height"] = _get_focused_window_height()
         _niri_action("set-window-height", f"{sign * pulse_px:+d}")
         return False
 
     def _restore():
-        _niri_action("set-window-height", f"{-sign * pulse_px:+d}")
+        # Reset to auto height first (handles auto-fill windows correctly)
+        _niri_action_sync("reset-window-height")
+        # If the window had a custom fixed height, restore it
+        h = saved.get("height")
+        if h is not None:
+            current_h = _get_focused_window_height()
+            if current_h is not None and abs(current_h - h) > 5:
+                _niri_action("set-window-height", str(h))
         return False
 
     GLib.timeout_add(100, _pulse)
