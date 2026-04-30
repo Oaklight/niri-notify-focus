@@ -16,10 +16,10 @@ When running many instances of the same application — multiple terminal window
 
 - **Precise window targeting** — maps notifications to source windows via D-Bus PID tracking and process tree walking, even when the notifying process is a child of the window process
 - **Works with any app** — terminals (kitty, alacritty, wezterm), browsers, IDEs — anything that sends desktop notifications
-- **Visual pulse feedback** — briefly expands the window width and height, then restores, so you can instantly identify it among similar windows
+- **Visual pulse feedback** — briefly shrinks the window height then restores, so you can instantly identify it among similar windows (configurable: shrink, expand, or none)
 - **Non-blocking** — all niri IPC calls and timers run asynchronously via GLib, no jank or freezes
 - **Resilient** — auto-reconnects on D-Bus errors, runs as a systemd user service with restart-on-failure
-- **Zero configuration** — install, enable, done
+- **Optional configuration** — works out of the box with sensible defaults; customize via a simple TOML file when needed
 
 ## Requirements
 
@@ -67,6 +67,21 @@ systemctl --user enable --now niri-notify-focus
 ```
 
 That's it. Click any notification action button and the source window will be focused with a brief visual pulse.
+
+### Configuration
+
+Optionally create `~/.config/niri-notify-focus/config.toml` to customize behavior. All settings have sensible defaults — the file is not required.
+
+```toml
+# Visual effect when focusing a window.
+# Options: "shrink" (inward pulse), "expand" (outward pulse), "none" (focus only)
+effect = "shrink"
+
+# Pixels to shrink/expand during pulse animation.
+pulse_pixels = 50
+```
+
+An example config is installed to `/usr/share/doc/niri-notify-focus/config.toml.example`.
 
 ### Testing
 
@@ -116,7 +131,7 @@ niri-notify-focus -d
 2. When a `Notify` method call arrives, resolves the sender PID via the `sender-pid` hint (set by libnotify) or falls back to `GetConnectionUnixProcessID`
 3. Walks up the process tree through `/proc/<pid>/status` (PPid field) to find the matching niri window — this handles cases where the notifying process is a child of the window process
 4. Correlates the `Notify` call with its method return to map `notification_id → window_id`
-5. When the user clicks a notification action (`ActionInvoked` signal), focuses the mapped window and triggers a brief size pulse (width +5%, height +5%, then restore) via `GLib.timeout_add` for non-blocking animation
+5. When the user clicks a notification action (`ActionInvoked` signal), focuses the mapped window and triggers a brief height pulse via `GLib.timeout_add` for non-blocking animation
 
 ## Compatibility
 

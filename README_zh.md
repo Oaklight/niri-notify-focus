@@ -16,10 +16,10 @@
 
 - **精准窗口定位** — 通过 D-Bus PID 追踪和进程树遍历，将通知映射到源窗口，即使通知进程是窗口进程的子进程也能正确识别
 - **适用于任何应用** — 终端（kitty、alacritty、wezterm）、浏览器、IDE 等任何发送桌面通知的应用
-- **视觉脉冲反馈** — 短暂放大窗口宽度和高度后恢复，让你在相似窗口中立即识别目标
+- **视觉脉冲反馈** — 短暂内缩窗口高度后恢复，让你在相似窗口中立即识别目标（可配置：内缩、外扩或无效果）
 - **非阻塞** — 所有 niri IPC 调用和定时器通过 GLib 异步运行，无卡顿
 - **自动恢复** — D-Bus 错误时自动重连，作为 systemd 用户服务运行，失败自动重启
-- **零配置** — 安装、启用，完成
+- **可选配置** — 开箱即用，提供合理默认值；需要时通过简单的 TOML 文件自定义
 
 ## 依赖
 
@@ -67,6 +67,21 @@ systemctl --user enable --now niri-notify-focus
 ```
 
 就这样。点击任何通知操作按钮，源窗口将被聚焦并伴有短暂的视觉脉冲。
+
+### 配置
+
+可选创建 `~/.config/niri-notify-focus/config.toml` 来自定义行为。所有设置都有合理的默认值——该文件不是必需的。
+
+```toml
+# 聚焦窗口时的视觉效果
+# 选项："shrink"（内缩脉冲）、"expand"（外扩脉冲）、"none"（仅聚焦）
+effect = "shrink"
+
+# 脉冲动画的像素偏移量
+pulse_pixels = 50
+```
+
+示例配置文件安装在 `/usr/share/doc/niri-notify-focus/config.toml.example`。
 
 ### 测试
 
@@ -116,7 +131,7 @@ niri-notify-focus -d
 2. 当 `Notify` 方法调用到达时，通过 `sender-pid` 提示（由 libnotify 设置）解析发送者 PID，或回退到 `GetConnectionUnixProcessID`
 3. 通过 `/proc/<pid>/status`（PPid 字段）向上遍历进程树，找到匹配的 niri 窗口——这处理了通知进程是窗口进程子进程的情况
 4. 将 `Notify` 调用与其方法返回关联，映射 `notification_id → window_id`
-5. 当用户点击通知操作（`ActionInvoked` 信号）时，聚焦映射的窗口并通过 `GLib.timeout_add` 触发短暂的尺寸脉冲（宽度 +5%，高度 +5%，然后恢复），实现非阻塞动画
+5. 当用户点击通知操作（`ActionInvoked` 信号）时，聚焦映射的窗口并通过 `GLib.timeout_add` 触发短暂的高度脉冲，实现非阻塞动画
 
 ## 兼容性
 
