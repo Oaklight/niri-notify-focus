@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 
 import dbus
 from dbus.mainloop.glib import DBusGMainLoop
@@ -28,6 +29,36 @@ LOG_FMT = "%(asctime)s %(levelname)s %(message)s"
 log = logging.getLogger("niri-notify-focus")
 
 MAX_ENTRIES = 200
+
+DEFAULTS = {
+    "effect": "shrink",
+    "pulse_pixels": 50,
+}
+
+
+def load_config():
+    """Load TOML config from XDG_CONFIG_HOME, falling back to defaults."""
+    config_home = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    config_path = os.path.join(config_home, "niri-notify-focus", "config.toml")
+
+    cfg = dict(DEFAULTS)
+    if not os.path.isfile(config_path):
+        log.debug("No config file at %s, using defaults", config_path)
+        return cfg
+
+    try:
+        with open(config_path, "rb") as f:
+            user_cfg = tomllib.load(f)
+        cfg.update(user_cfg)
+        log.info("Loaded config from %s", config_path)
+    except Exception as e:
+        log.warning("Failed to parse %s: %s — using defaults", config_path, e)
+
+    if cfg["effect"] not in ("shrink", "expand", "none"):
+        log.warning("Unknown effect %r, falling back to 'shrink'", cfg["effect"])
+        cfg["effect"] = "shrink"
+
+    return cfg
 
 
 def get_niri_windows():
@@ -86,29 +117,31 @@ def _niri_action(*args):
         log.error("niri action %s failed: %s", args, e)
 
 
-PULSE_PX = 50
+def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
+    """Focus window and optionally pulse its height as a visual cue.
 
-
-def flash_and_focus_window(window_id):
-    """Focus window, then pulse its height inward as a visual cue.
-
-    Shrinks the window height by a fixed pixel amount then adds it back,
-    using symmetric relative offsets to guarantee exact restoration.
-    Width is left untouched because set-column-width affects every
-    window in the same column.
+    Args:
+        window_id: The niri window ID to focus.
+        effect: "shrink" (inward pulse), "expand" (outward pulse), or "none".
+        pulse_px: Pixels to offset during the pulse animation.
     """
     _niri_action("focus-window", "--id", str(window_id))
     log.info("Focused window %d", window_id)
 
-    def _shrink():
-        _niri_action("set-window-height", f"-{PULSE_PX}")
+    if effect == "none":
+        return
+
+    sign = -1 if effect == "shrink" else 1
+
+    def _pulse():
+        _niri_action("set-window-height", f"{sign * pulse_px:+d}")
         return False
 
     def _restore():
-        _niri_action("set-window-height", f"+{PULSE_PX}")
+        _niri_action("set-window-height", f"{-sign * pulse_px:+d}")
         return False
 
-    GLib.timeout_add(100, _shrink)
+    GLib.timeout_add(100, _pulse)
     GLib.timeout_add(500, _restore)
 
 
@@ -129,7 +162,7 @@ def get_dbus_sender_pid(lookup_bus, sender_name):
         return None
 
 
-def run_monitor():
+def run_monitor(cfg):
     """Run the BecomeMonitor loop."""
     # Separate connection for D-Bus PID lookups (BecomeMonitor is read-only)
     lookup_bus = dbus.SessionBus()
@@ -220,7 +253,9 @@ def run_monitor():
                         wid,
                         title[:40],
                     )
-                    flash_and_focus_window(wid)
+                    flash_and_focus_window(
+                        wid, cfg["effect"], cfg["pulse_pixels"]
+                    )
 
         # --- NotificationClosed signal: user dismissed ---
         elif msg_type == 4 and member == "NotificationClosed":
@@ -267,9 +302,12 @@ def main():
     logging.basicConfig(format=LOG_FMT, level=level)
     DBusGMainLoop(set_as_default=True)
 
+    cfg = load_config()
+    log.info("effect=%s, pulse_pixels=%d", cfg["effect"], cfg["pulse_pixels"])
+
     while True:
         try:
-            run_monitor()
+            run_monitor(cfg)
         except dbus.exceptions.DBusException as e:
             log.warning("D-Bus error: %s — retrying in 5s", e)
             time.sleep(5)

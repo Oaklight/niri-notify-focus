@@ -4,6 +4,7 @@ DESTDIR ?=
 BIN_DIR = $(DESTDIR)$(PREFIX)/bin
 SERVICE_DIR = $(DESTDIR)$(PREFIX)/lib/systemd/user
 LICENSE_DIR = $(DESTDIR)$(PREFIX)/share/licenses/niri-notify-focus
+DOC_DIR = $(DESTDIR)$(PREFIX)/share/doc/niri-notify-focus
 
 .PHONY: install uninstall help
 
@@ -11,11 +12,13 @@ install:
 	install -Dm755 niri-notify-focus $(BIN_DIR)/niri-notify-focus
 	install -Dm644 niri-notify-focus.service $(SERVICE_DIR)/niri-notify-focus.service
 	install -Dm644 LICENSE $(LICENSE_DIR)/LICENSE
+	install -Dm644 config.toml.example $(DOC_DIR)/config.toml.example
 
 uninstall:
 	rm -f $(BIN_DIR)/niri-notify-focus
 	rm -f $(SERVICE_DIR)/niri-notify-focus.service
 	rm -rf $(LICENSE_DIR)
+	rm -rf $(DOC_DIR)
 
 help:
 	@echo "Available targets:"

@@ -1,0 +1,6 @@
+# Visual effect when focusing a window.
+# Options: "shrink" (inward pulse), "expand" (outward pulse), "none" (focus only)
+effect = "shrink"
+
+# Pixels to shrink/expand during pulse animation.
+pulse_pixels = 50
