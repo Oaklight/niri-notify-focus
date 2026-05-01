@@ -1,5 +1,10 @@
 # niri-notify-focus
 
+[![GitHub release](https://img.shields.io/github/v/release/Oaklight/niri-notify-focus?color=green)](https://github.com/Oaklight/niri-notify-focus/releases/latest)
+[![AUR version](https://img.shields.io/aur/version/niri-notify-focus?color=blue)](https://aur.archlinux.org/packages/niri-notify-focus)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Oaklight/niri-notify-focus)
+
 **中文** | [English](README_en.md)
 
 点击桌面通知时，自动跳转到 [niri](https://github.com/YaLTeR/niri) 中发送通知的源窗口。
