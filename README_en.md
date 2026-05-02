@@ -55,6 +55,49 @@ cd niri-notify-focus
 sudo make install
 ```
 
+### Nix (flakes)
+
+Try it without installing:
+
+```bash
+nix run github:Oaklight/niri-notify-focus
+```
+
+Add the package to a flake-based config via the overlay:
+
+```nix
+# flake.nix
+{
+  inputs.niri-notify-focus.url = "github:Oaklight/niri-notify-focus";
+  # ...
+}
+```
+
+```nix
+# nixos / home-manager / wherever you build pkgs
+nixpkgs.overlays = [ inputs.niri-notify-focus.overlays.default ];
+# now available as pkgs.niri-notify-focus
+```
+
+Or, with [home-manager](https://github.com/nix-community/home-manager), use the
+included module to install the package, manage `config.toml`, and the systemd
+user unit declaratively. The unit is restarted automatically when `settings`
+change.
+
+```nix
+{ inputs, ... }: {
+  imports = [ inputs.niri-notify-focus.homeManagerModules.default ];
+
+  services.niri-notify-focus = {
+    enable = true;
+    settings = {
+      effect = "shrink";
+      pulse_pixels = 50;
+    };
+  };
+}
+```
+
 ### Uninstall
 
 ```bash
