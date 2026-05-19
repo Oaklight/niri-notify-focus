@@ -1,6 +1,6 @@
 # Maintainer: Pei Ding <oaklight at gmx dot com>
 pkgname=niri-notify-focus
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="Focus source window on notification click for the niri Wayland compositor"
 arch=('any')
