@@ -163,6 +163,37 @@ This tool requires a notification daemon that emits `ActionInvoked` D-Bus signal
 
 Issues and pull requests are welcome at [GitHub](https://github.com/Oaklight/niri-notify-focus).
 
+## Release process
+
+Releases are handled via `make release`, which automates tagging, sha256sum
+computation, GitHub release creation, and AUR publishing in one shot.
+
+Steps:
+
+1. Make your changes and commit them.
+2. Bump `pkgver` in `PKGBUILD`.
+3. Add a matching `## [x.y.z]` entry to `CHANGELOG.md`.
+4. Run:
+
+```bash
+make release
+```
+
+This will:
+
+- Create and push the git tag `vX.Y.Z` (skips if it already exists)
+- Download the GitHub-generated tarball and compute its sha256sum
+- Update `PKGBUILD` with the new sha256sum and push
+- Create (or update) the GitHub release, pulling notes from `CHANGELOG.md`
+- Clone/update the AUR repo, regenerate `.SRCINFO`, and push
+
+To run only part of the flow:
+
+```bash
+make release-github   # tag + sha256sum + GitHub release only
+make release-aur      # AUR push only
+```
+
 ## License
 
 [MIT](LICENSE)

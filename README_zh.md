@@ -163,6 +163,36 @@ niri-notify-focus -d
 
 欢迎在 [GitHub](https://github.com/Oaklight/niri-notify-focus) 上提交 Issue 和 Pull Request。
 
+## 发版流程
+
+通过 `make release` 一键完成打 tag、计算 sha256sum、创建 GitHub release 和发布 AUR 的全部步骤。
+
+操作步骤：
+
+1. 完成代码修改并 commit。
+2. 在 `PKGBUILD` 中更新 `pkgver`。
+3. 在 `CHANGELOG.md` 中添加对应的 `## [x.y.z]` 条目。
+4. 运行：
+
+```bash
+make release
+```
+
+该命令将自动：
+
+- 创建并推送 git tag `vX.Y.Z`（已存在则跳过）
+- 下载 GitHub 生成的 tarball 并计算 sha256sum
+- 更新 `PKGBUILD` 中的 sha256sum 并推送
+- 创建（或更新）GitHub release，从 `CHANGELOG.md` 提取对应版本的说明
+- 克隆/更新 AUR 仓库，重新生成 `.SRCINFO` 并推送
+
+也可以单独运行某个步骤：
+
+```bash
+make release-github   # 仅打 tag + 计算 sha256sum + 创建 GitHub release
+make release-aur      # 仅推送 AUR
+```
+
 ## 许可证
 
 [MIT](LICENSE)
