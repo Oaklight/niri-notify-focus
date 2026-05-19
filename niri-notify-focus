@@ -130,7 +130,7 @@ def _niri_action_sync(*args):
 
 
 def _get_focused_window_height():
-    """Get the focused window's height in pixels."""
+    """Get the focused window's height in logical pixels."""
     try:
         result = subprocess.run(
             ["niri", "msg", "--json", "focused-window"],
@@ -139,7 +139,7 @@ def _get_focused_window_height():
             timeout=2,
         )
         info = json.loads(result.stdout)
-        return int(info["layout"]["window_size"][1])
+        return info["layout"]["window_size"][1]
     except Exception:
         return None
 
@@ -168,15 +168,18 @@ def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
         return False
 
     def _restore():
-        # Width: symmetric ±px restore (column width has no auto mode)
-        _niri_action("set-column-width", f"{-sign * pulse_px:+d}")
-        # Height: reset to auto first, then conditionally restore fixed height
+        # Restore column width first (sync), so that reset-window-height
+        # calculates auto height with the correct column width already in place.
+        # Previously set-column-width was async here, causing auto height to be
+        # computed at the old (narrower) column width, which triggered a spurious
+        # fixed-height override and left the window shorter after scaling.
+        _niri_action_sync("set-column-width", f"{-sign * pulse_px:+d}")
         _niri_action_sync("reset-window-height")
         h = saved.get("height")
         if h is not None:
             current_h = _get_focused_window_height()
             if current_h is not None and abs(current_h - h) > 5:
-                _niri_action("set-window-height", str(h))
+                _niri_action("set-window-height", str(round(h)))
         return False
 
     GLib.timeout_add(100, _pulse)
