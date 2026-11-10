@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Restore the target's geometry from a snapshot taken by window ID instead of
+  undoing the pulse with a relative `+N`. niri clamps a relative change at the
+  screen edge, so `-50` on a full-width column is clamped while the matching
+  `+50` is not; the column ended up wider than the screen. Absolute values
+  remove the drift entirely.
+- Run the pulse and the restore synchronously, on a worker thread. The pulse
+  used fire-and-forget `niri msg` calls, so under IPC contention its
+  `set-window-height` could be delivered after the restore's
+  `reset-window-height`, freezing the window at its shrunk height.
+- Verify the final geometry and correct it: a user-fixed height is re-applied,
+  and a column that was maximized-to-edges (tile size equal to window size) is
+  re-maximized, because any size change clears that state.
+- Skip the pulse when the target window no longer exists or never gains focus,
+  instead of resizing whatever window happens to be focused.
+
 ## [0.2.1] - 2026-05-19
 
 ### Fixed

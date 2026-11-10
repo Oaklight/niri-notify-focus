@@ -18,6 +18,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 
@@ -129,19 +130,120 @@ def _niri_action_sync(*args):
         log.error("niri action %s failed: %s", args, e)
 
 
-def _get_focused_window_height():
-    """Get the focused window's height in logical pixels."""
+def _get_window_geometry(window_id):
+    """Return {tile: (w, h), win: (w, h)} for a window ID, or None.
+
+    Looked up by ID from the full window list, so it is unaffected by
+    whatever window happens to be focused at the time.
+    """
     try:
         result = subprocess.run(
-            ["niri", "msg", "--json", "focused-window"],
+            ["niri", "msg", "--json", "windows"],
             capture_output=True,
             text=True,
             timeout=2,
         )
-        info = json.loads(result.stdout)
-        return info["layout"]["window_size"][1]
+        for w in json.loads(result.stdout):
+            if int(w["id"]) == window_id:
+                layout = w["layout"]
+                return {
+                    "tile": tuple(round(v) for v in layout["tile_size"]),
+                    "win": tuple(int(v) for v in layout["window_size"]),
+                }
     except Exception:
-        return None
+        pass
+    return None
+
+
+def _wait_for_window_id(window_id, timeout_s=1.0):
+    """Block (on a worker thread) until the given window is the focused one.
+
+    `focus-window` is issued asynchronously; a size action issued before
+    that lands would apply to the previously focused window instead.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            result = subprocess.run(
+                ["niri", "msg", "--json", "focused-window"],
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            if int(json.loads(result.stdout)["id"]) == window_id:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.02)
+    return False
+
+
+def _window_action(window_id, *args, id_flagged=False):
+    """Focus a window by ID, wait for it, then run a niri action on it.
+
+    `set-column-width` has no `--id` option, so the column action has to
+    target the focused window. `set-window-height`, `reset-window-height`
+    and `maximize-window-to-edges` do accept `--id`; passing it makes those
+    commands immune to focus moving away mid-pulse.
+    """
+    _niri_action_sync("focus-window", "--id", str(window_id))
+    if not _wait_for_window_id(window_id):
+        return False
+    if id_flagged:
+        _niri_action_sync(*args, "--id", str(window_id))
+    else:
+        _niri_action_sync(*args)
+    return True
+
+
+def _restore_geometry(window_id, before, attempts=3):
+    """Return the window to its snapshot, retrying if focus drifted.
+
+    A niri size action applies to the focused window. If focus moves during
+    the pulse (another notification, a new window opening), a restore can
+    land on the wrong window and leave the target shrunk. Verify and retry.
+    """
+    for attempt in range(1, attempts + 1):
+        ok = _window_action(window_id, "set-column-width", str(before["win"][0]))
+        ok = ok and _window_action(window_id, "reset-window-height", id_flagged=True)
+        if not ok:
+            time.sleep(0.1)
+            continue
+
+        after = _get_window_geometry(window_id)
+        if after is not None and after["win"] == before["win"]:
+            return after
+
+        # A user-fixed height does not come back from reset-window-height.
+        if after is not None and abs(after["win"][1] - before["win"][1]) > 2:
+            _window_action(
+                window_id, "set-window-height", str(before["win"][1]), id_flagged=True
+            )
+            after = _get_window_geometry(window_id)
+            if after is not None and after["win"] == before["win"]:
+                return after
+
+        # Maximized-to-edges is cleared by any size change; re-apply it when
+        # the window filled its tile beforehand (tile size met window size).
+        if before["tile"] == before["win"]:
+            _window_action(window_id, "maximize-window-to-edges", id_flagged=True)
+            time.sleep(0.2)
+            after = _get_window_geometry(window_id)
+            if after is not None and after["win"] == before["win"]:
+                return after
+
+        log.debug("Restore attempt %d for window %d did not settle", attempt, window_id)
+        time.sleep(0.1)
+
+    after = _get_window_geometry(window_id)
+    if after is not None and after["win"] != before["win"]:
+        log.warning(
+            "Window %d geometry %s -> %s not fully restored",
+            window_id,
+            before["win"],
+            after["win"],
+        )
+    return after
 
 
 def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
@@ -151,6 +253,23 @@ def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
         window_id: The niri window ID to focus.
         effect: "shrink" (inward pulse), "expand" (outward pulse), or "none".
         pulse_px: Pixels to offset during the pulse animation.
+
+    Three rules keep the window's geometry intact:
+
+    1. The target's geometry is snapshotted by window ID *before* anything
+       else, and restored with absolute values. A relative undo (`+50`)
+       drifts whenever niri clamps the pulse: on a column already at full
+       width `-50` is clamped but `+50` is not, leaving the column wider
+       than the screen. Absolute pixels are exact.
+    2. Every command is synchronous, on a worker thread. A fire-and-forget
+       pulse could be delivered after the restore and freeze the window at
+       its shrunk size.
+    3. The restore is verified against the snapshot and retried, because a
+       niri size action applies to whichever window is focused.
+
+    The snapshot also records whether the column was maximized-to-edges
+    (tile size equals window size), because any size change clears that
+    state and it has to be re-applied.
     """
     _niri_action("focus-window", "--id", str(window_id))
     log.info("Focused window %d", window_id)
@@ -159,31 +278,38 @@ def flash_and_focus_window(window_id, effect="shrink", pulse_px=50):
         return
 
     sign = -1 if effect == "shrink" else 1
-    saved = {}
 
-    def _pulse():
-        saved["height"] = _get_focused_window_height()
-        _niri_action("set-column-width", f"{sign * pulse_px:+d}")
-        _niri_action("set-window-height", f"{sign * pulse_px:+d}")
-        return False
+    def _run_pulse():
+        before = _get_window_geometry(window_id)
+        if before is None:
+            log.warning("Window %d vanished, skipping pulse", window_id)
+            return
 
-    def _restore():
-        # Restore column width first (sync), so that reset-window-height
-        # calculates auto height with the correct column width already in place.
-        # Previously set-column-width was async here, causing auto height to be
-        # computed at the old (narrower) column width, which triggered a spurious
-        # fixed-height override and left the window shorter after scaling.
-        _niri_action_sync("set-column-width", f"{-sign * pulse_px:+d}")
-        _niri_action_sync("reset-window-height")
-        h = saved.get("height")
-        if h is not None:
-            current_h = _get_focused_window_height()
-            if current_h is not None and abs(current_h - h) > 5:
-                _niri_action("set-window-height", str(round(h)))
-        return False
+        # A full-bleed window (tile size meets window size) is maximized to
+        # the edges. Any size change clears that state and re-applying it is
+        # not always reliable, so focus without pulsing.
+        if before["tile"] == before["win"]:
+            log.debug("Window %d is full-bleed, focusing without pulse", window_id)
+            _window_action(window_id)
+            return
 
-    GLib.timeout_add(100, _pulse)
-    GLib.timeout_add(500, _restore)
+        if not _window_action(window_id, "set-column-width", f"{sign * pulse_px:+d}"):
+            log.warning("Window %d did not gain focus, skipping pulse", window_id)
+            return
+        _window_action(
+            window_id, "set-window-height", f"{sign * pulse_px:+d}", id_flagged=True
+        )
+        time.sleep(0.35)
+
+        _restore_geometry(window_id, before)
+
+    # Run the blocking pulse sequence on a worker thread so it cannot
+    # stall the GLib main loop (which must keep processing D-Bus
+    # notification traffic). The 100 ms delay lets the async focus settle.
+    GLib.timeout_add(
+        100,
+        lambda: (threading.Thread(target=_run_pulse, daemon=True).start(), False)[1],
+    )
 
 
 def get_dbus_sender_pid(lookup_bus, sender_name):
@@ -294,9 +420,7 @@ def run_monitor(cfg):
                         wid,
                         title[:40],
                     )
-                    flash_and_focus_window(
-                        wid, cfg["effect"], cfg["pulse_pixels"]
-                    )
+                    flash_and_focus_window(wid, cfg["effect"], cfg["pulse_pixels"])
 
         # --- NotificationClosed signal: user dismissed ---
         elif msg_type == 4 and member == "NotificationClosed":
@@ -309,9 +433,7 @@ def run_monitor(cfg):
                     wid, title = notif_to_window[notif_id]
                     # Only focus if ActionInvoked didn't already handle it
                     # (DMS sends both ActionInvoked then NotificationClosed)
-                    log.debug(
-                        "NotificationClosed notif=%d reason=%d", notif_id, reason
-                    )
+                    log.debug("NotificationClosed notif=%d reason=%d", notif_id, reason)
                 notif_to_window.pop(notif_id, None)
 
         return dbus.lowlevel.HANDLER_RESULT_HANDLED
